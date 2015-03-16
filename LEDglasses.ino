@@ -1,27 +1,28 @@
 #define BUTTON 2
-#define RED 6
-#define GREEN 5
+#define ENC_RED 5
+#define ENC_GREEN 6
 #define ENC_A 15
 #define ENC_B 14
 #define ENC_PORT PINC
 
+#define MIN_FREQ 1
 #define MAX_FREQ 63  // the maximum frequency to allow
 #define BOUNCE_DURATION 50   // define an appropriate bounce time in ms for your switches
 
 // the different settings used by the rotary encoder
 typedef enum { FREQUENCY, HUE, BRIGHTNESS, NUM_MODES } RotaryMode;
 
-unsigned int period = 1000; // in ms
+unsigned long period = 1000000UL; // in us
 unsigned int rgb[3] = { 255, 0, 0}; // 0 -255
 
-RotaryMode currentMode = FREQUENCY;
+RotaryMode currMode = FREQUENCY;
 int rotaryCounters[NUM_MODES];
 
 unsigned long lastUpdateTime = 0;
-unsigned int phase = 0;
+unsigned long phase = 0;
 
 void setup() {
-  rotaryCounters[FREQUENCY] = 1;
+  rotaryCounters[FREQUENCY] = 0;
   rotaryCounters[HUE] = 0;
   rotaryCounters[BRIGHTNESS] = 75;
 
@@ -34,8 +35,9 @@ void setup() {
   pinMode(BUTTON, INPUT);
   digitalWrite(BUTTON, HIGH);
 
-  pinMode(RED, OUTPUT);
-  pinMode(GREEN, OUTPUT);
+  pinMode(ENC_RED, OUTPUT);
+  pinMode(ENC_GREEN, OUTPUT);
+  analogWrite(ENC_RED, 10);
     
   SB_init();
   randomSeed(analogRead(18));
@@ -55,42 +57,37 @@ void updateSettings() {
   boolean buttonPressed = wasButtonJustPressed();
   if (buttonPressed) {
     Serial.println("Button pressed");
-    currentMode = (RotaryMode) ((currentMode + 1) % NUM_MODES);
+    currMode = (RotaryMode) ((currMode + 1) % NUM_MODES);
   }
-  int* currCounter = &rotaryCounters[currentMode];
+  int* currCounter = &rotaryCounters[currMode];
   
   int8_t encoderChg = read_encoder();
   if (encoderChg == 0 && !buttonPressed) return;
-  
-  switch (currentMode) {
+
+  switch (currMode) {
     case FREQUENCY:
-      *currCounter = constrain(*currCounter+encoderChg, 4, 255);
-      Serial.print("Freq counter: "); Serial.println(*currCounter);
-      analogWrite(GREEN, gamma(*currCounter));    
-      analogWrite(RED, 0);
-      
-      period = 1000UL * 255 / *currCounter / MAX_FREQ;
-      Serial.print("period: "); Serial.println(period, DEC);
+      *currCounter = constrain(*currCounter+encoderChg, 0, 1023);
+      period = 1000000UL / MAX_FREQ * 1023 / *currCounter;
+      period = constrain(period, 1000000UL / MAX_FREQ, 1000000UL/MIN_FREQ);
+      Serial.print("Freq counter: "); Serial.println(*currCounter);      
+      Serial.print("Freq: "); Serial.println(1000000UL/period, DEC);
       break;
     
     case HUE:
       *currCounter = constrain(*currCounter+encoderChg, 0, 255);
       Serial.print("Hue1 counter: "); Serial.println(*currCounter);
-      analogWrite(RED, gamma(*currCounter));
-      analogWrite(GREEN, 0);
-      
-      getRGB(rotaryCounters[HUE], 255, rotaryCounters[BRIGHTNESS], rgb);  
       break;
     
     case BRIGHTNESS:
       *currCounter = constrain(*currCounter+encoderChg, 0, 255);
       Serial.print("Brightness counter: "); Serial.println(*currCounter);
-      analogWrite(RED, gamma(*currCounter));
-      analogWrite(GREEN, 0);
-
-      getRGB(rotaryCounters[HUE], 255, rotaryCounters[BRIGHTNESS], rgb);  
       break;
   }
+
+  analogWrite(ENC_RED, currMode == FREQUENCY ? max(*currCounter/4, 10) : 0);
+  analogWrite(ENC_GREEN, currMode == HUE || currMode == BRIGHTNESS ? max(*currCounter, 10) : 0);
+  
+  getRGB(rotaryCounters[HUE], 255, rotaryCounters[BRIGHTNESS], rgb);  
 }
   
 
@@ -105,8 +102,8 @@ int8_t read_encoder() {
 }
 
 void draw() {
-  phase = (phase +  millis() - lastUpdateTime) % period;
-  lastUpdateTime = millis();
+  phase = (phase +  micros() - lastUpdateTime) % period;
+  lastUpdateTime = micros();
   unsigned int rgbEyes[3][2];
   
   for (int eye=0; eye<2; eye++) {    

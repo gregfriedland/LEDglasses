@@ -44,6 +44,8 @@ void setup() {
   
   Serial.begin (115200);
   Serial.println("Start");
+
+  getRGB(rotaryCounters[HUE], 255, rotaryCounters[BRIGHTNESS], rgb);    
 }
  
 void loop() {
@@ -74,7 +76,7 @@ void updateSettings() {
       break;
     
     case HUE:
-      *currCounter = constrain(*currCounter+encoderChg, 0, 255);
+      *currCounter = (*currCounter+encoderChg+360) % 360;
       Serial.print("Hue1 counter: "); Serial.println(*currCounter);
       break;
     

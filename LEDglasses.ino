@@ -1,3 +1,7 @@
+// the different settings used by the rotary encoder
+typedef enum { BRIGHTNESS, GUIDED, FREQUENCY, HUE, NUM_MODES } RotaryMode;
+
+
 #define BUTTON 2
 #define ENC_RED 5
 #define ENC_GREEN 6
@@ -5,19 +9,21 @@
 #define ENC_B 14
 #define ENC_PORT PINC
 
-#define MIN_FREQ 1
-#define MAX_FREQ 63  // the maximum frequency to allow
+#define DEFAULT_BRIGHTNESS 150
+#define DEFAULT_GUIDED_SPEED 3
+#define DEFAULT_MODE BRIGHTNESS
+
+#define MIN_FREQ 6
+#define MAX_FREQ 45  // the maximum frequency to allow
 #define MAX_HUE 360
 #define MAX_SAT 255
 #define MAX_BRIGHTNESS 255
+#define MAX_GUIDED_SPEED_MULT 100
 #define BOUNCE_DURATION 50   // define an appropriate bounce time in ms for your switches
 #define MAX_ENC_VAL 1023
 
 #define p(...) Serial.print(__VA_ARGS__)
 
-
-// the different settings used by the rotary encoder
-typedef enum { FREQUENCY, HUE, BRIGHTNESS, GUIDED, NUM_MODES } RotaryMode;
 
 typedef struct GuidedState {
   uint32_t precision;   // precision to store freq & hue at
@@ -33,24 +39,24 @@ GuidedState guidedState;
 unsigned long period = 1000000UL; // in us
 unsigned int rgb[3] = { 0, 0, 0};
 
-RotaryMode currMode = FREQUENCY;
+RotaryMode currMode = DEFAULT_MODE;
 int rotaryCounters[NUM_MODES];
 
 unsigned long lastUpdateTime = 0;
 unsigned long phase = 0;
 
 void setup() {
-  rotaryCounters[FREQUENCY] = 0;
+  rotaryCounters[FREQUENCY] = MIN_FREQ * MAX_ENC_VAL / MAX_FREQ;
   rotaryCounters[HUE] = 0;
-  rotaryCounters[BRIGHTNESS] = 75;
-  rotaryCounters[GUIDED] = 10;
+  rotaryCounters[BRIGHTNESS] = DEFAULT_BRIGHTNESS;
+  rotaryCounters[GUIDED] = DEFAULT_GUIDED_SPEED;
 
-  guidedState.dChangeOdds = 100;
+  guidedState.dChangeOdds = 250;
   guidedState.precision = 1000;
   guidedState.freq = 1 * guidedState.precision;
   guidedState.hue = 0;
-  guidedState.dfreq = guidedState.precision / 100;
-  guidedState.dhue = guidedState.precision / 10;
+  guidedState.dfreq = (guidedState.precision * MAX_FREQ) / 10000;
+  guidedState.dhue = (guidedState.precision * MAX_HUE) / 10000;
 
   /* Setup encoder pins as inputs */
   pinMode(ENC_A, INPUT);
@@ -71,6 +77,7 @@ void setup() {
   Serial.begin(115200);
   p("Start\n");
 
+  period = 1000000UL / MAX_FREQ * MAX_ENC_VAL / rotaryCounters[FREQUENCY];
   getRGB(rotaryCounters[HUE], MAX_SAT, rotaryCounters[BRIGHTNESS], rgb);    
 }
  
@@ -112,6 +119,11 @@ void updateSettings() {
       *currCounter = constrain(*currCounter+encoderChg, 0, MAX_BRIGHTNESS);
       p("Brightness counter: "); p(*currCounter); p("\n");
       break;
+
+    case GUIDED:
+      *currCounter = constrain(*currCounter+encoderChg, 0, MAX_GUIDED_SPEED_MULT);
+      p("Guided speed counter: "); p(*currCounter); p("\n");
+      break;      
   }
 
   analogWrite(ENC_RED, currMode == FREQUENCY ? max(*currCounter/4, 10) : 0);

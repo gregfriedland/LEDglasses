@@ -1,13 +1,15 @@
+#include "FastLED.h"
+
 // the different settings used by the rotary encoder
 typedef enum { BRIGHTNESS, GUIDED, FREQUENCY, HUE, NUM_MODES } RotaryMode;
 
 
-#define BUTTON 2
-#define ENC_RED 5
-#define ENC_GREEN 6
-#define ENC_A 15
-#define ENC_B 14
+#define ENC_BUTTON 4
+#define ENC_A A1
+#define ENC_B A0
 #define ENC_PORT PINC
+#define ENC_INCR 3 // how fast to adjust from one encoder change
+#define LED_PIN 2
 
 #define DEFAULT_BRIGHTNESS 150
 #define DEFAULT_GUIDED_SPEED 3
@@ -15,14 +17,19 @@ typedef enum { BRIGHTNESS, GUIDED, FREQUENCY, HUE, NUM_MODES } RotaryMode;
 
 #define MIN_FREQ 6
 #define MAX_FREQ 45  // the maximum frequency to allow
-#define MAX_HUE 360
+#define MAX_HUE 255
 #define MAX_SAT 255
 #define MAX_BRIGHTNESS 255
 #define MAX_GUIDED_SPEED_MULT 100
 #define BOUNCE_DURATION 50   // define an appropriate bounce time in ms for your switches
 #define MAX_ENC_VAL 1023
 
+#define NUM_LEDS 8 // There are 8 leds total although we use only the 3 on either end
+const bool use_leds[] = {1,1,1,0,0,1,1,1};
+
 #define p(...) Serial.print(__VA_ARGS__)
+
+CRGB leds[NUM_LEDS];
 
 
 typedef struct GuidedState {
@@ -37,7 +44,7 @@ typedef struct GuidedState {
 
 GuidedState guidedState;
 unsigned long period = 1000000UL; // in us
-unsigned int rgb[3] = { 0, 0, 0};
+CRGB rgb;
 
 RotaryMode currMode = DEFAULT_MODE;
 int rotaryCounters[NUM_MODES];
@@ -52,38 +59,33 @@ void setup() {
   rotaryCounters[GUIDED] = DEFAULT_GUIDED_SPEED;
 
   guidedState.dChangeOdds = 250;
-  guidedState.precision = 1000;
+  guidedState.precision = 200;
   guidedState.freq = 1 * guidedState.precision;
   guidedState.hue = 0;
   guidedState.dfreq = (guidedState.precision * MAX_FREQ) / 10000;
   guidedState.dhue = (guidedState.precision * MAX_HUE) / 10000;
 
-  /* Setup encoder pins as inputs */
-  pinMode(ENC_A, INPUT);
-  digitalWrite(ENC_A, HIGH);
-  pinMode(ENC_B, INPUT);
-  digitalWrite(ENC_B, HIGH);
-  
-  pinMode(BUTTON, INPUT);
-  digitalWrite(BUTTON, HIGH);
+  init_encoder();
 
-  pinMode(ENC_RED, OUTPUT);
-  pinMode(ENC_GREEN, OUTPUT);
-  analogWrite(ENC_RED, 10);
-    
-  SB_init();
+  pinMode(ENC_BUTTON, INPUT);
+  digitalWrite(ENC_BUTTON, HIGH);
+
+  FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
+  FastLED.setBrightness( 255 ); // brightness is controlled elsewhere
+
   randomSeed(analogRead(18));
   
+  period = 1000000UL / MAX_FREQ * MAX_ENC_VAL / rotaryCounters[FREQUENCY];
+
+  hsv2rgb_rainbow(CHSV(rotaryCounters[HUE], MAX_SAT, rotaryCounters[BRIGHTNESS]), rgb);
+
   Serial.begin(115200);
   p("Start\n");
-
-  period = 1000000UL / MAX_FREQ * MAX_ENC_VAL / rotaryCounters[FREQUENCY];
-  getRGB(rotaryCounters[HUE], MAX_SAT, rotaryCounters[BRIGHTNESS], rgb);    
 }
  
 void loop() {
   draw();
-  delay(5);
+  delay(1);
 
   updateSettings();
   if (currMode == GUIDED)
@@ -126,10 +128,7 @@ void updateSettings() {
       break;      
   }
 
-  analogWrite(ENC_RED, currMode == FREQUENCY ? max(*currCounter/4, 10) : 0);
-  analogWrite(ENC_GREEN, currMode == HUE || currMode == BRIGHTNESS ? max(*currCounter, 10) : 0);
-  
-  getRGB(rotaryCounters[HUE], MAX_SAT, rotaryCounters[BRIGHTNESS], rgb);  
+  hsv2rgb_rainbow(CHSV(rotaryCounters[HUE], MAX_SAT, rotaryCounters[BRIGHTNESS]), rgb);
 }
   
 
@@ -152,46 +151,120 @@ void updateGuided()
 
   guidedState.hue += guidedState.dhue * speedMult;
   guidedState.hue = (guidedState.hue + MAX_HUE*guidedState.precision) % (MAX_HUE*guidedState.precision);
-  getRGB(guidedState.hue/guidedState.precision, MAX_SAT, rotaryCounters[BRIGHTNESS], rgb);  
+  hsv2rgb_rainbow(CHSV(guidedState.hue/guidedState.precision, MAX_SAT, rotaryCounters[BRIGHTNESS]), rgb);
+
 
   // p("Guided: freq="); p(guidedState.freq/guidedState.precision); 
   // p("; hue="); p(guidedState.hue/guidedState.precision); p("\n");
 }
 
 
+static uint8_t enc_prev_pos   = 0;
+static uint8_t enc_flags      = 0;
+
+void init_encoder() {
+  /* Setup encoder pins as inputs */
+  pinMode(ENC_A, INPUT_PULLUP);
+  pinMode(ENC_B, INPUT_PULLUP);
+
+  // get an initial reading on the encoder pins
+  if (digitalRead(ENC_A) == LOW) {
+    enc_prev_pos |= (1 << 0);
+  }
+  if (digitalRead(ENC_B) == LOW) {
+    enc_prev_pos |= (1 << 1);
+  }
+}
 /* returns change in encoder state (-1,0,1) */
+// From Adafruit: https://learn.adafruit.com/pro-trinket-rotary-encoder
 int8_t read_encoder() {
-  static int8_t enc_states[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
-  static uint8_t old_AB = 0;
-  /**/
-  old_AB <<= 2;                   //remember previous state
-  old_AB |= ( ENC_PORT & 0x03 );  //add current state
-  return -( enc_states[( old_AB & 0x0f )]);
+
+  int8_t enc_action = 0; // 1 or -1 if moved, sign is direction
+ 
+  // note: for better performance, the code will use
+  // direct port access techniques
+  // http://www.arduino.cc/en/Reference/PortManipulation
+  uint8_t enc_cur_pos = 0;
+  // read in the encoder state first
+  if ((ENC_PORT & digitalPinToBitMask(ENC_A)) == 0) {
+    enc_cur_pos |= (1 << 0);
+  }
+  if ((ENC_PORT & digitalPinToBitMask(ENC_B)) == 0) {
+    enc_cur_pos |= (1 << 1);
+  }
+ 
+  // if any rotation at all
+  if (enc_cur_pos != enc_prev_pos)
+  {
+    if (enc_prev_pos == 0x00)
+    {
+      // this is the first edge
+      if (enc_cur_pos == 0x01) {
+        enc_flags |= (1 << 0);
+      }
+      else if (enc_cur_pos == 0x02) {
+        enc_flags |= (1 << 1);
+      }
+    }
+ 
+    if (enc_cur_pos == 0x03)
+    {
+      // this is when the encoder is in the middle of a "step"
+      enc_flags |= (1 << 4);
+    }
+    else if (enc_cur_pos == 0x00)
+    {
+      // this is the final edge
+      if (enc_prev_pos == 0x02) {
+        enc_flags |= (1 << 2);
+      }
+      else if (enc_prev_pos == 0x01) {
+        enc_flags |= (1 << 3);
+      }
+ 
+      // check the first and last edge
+      // or maybe one edge is missing, if missing then require the middle state
+      // this will reject bounces and false movements
+      if (bit_is_set(enc_flags, 0) && (bit_is_set(enc_flags, 2) || bit_is_set(enc_flags, 4))) {
+        enc_action = 1;
+      }
+      else if (bit_is_set(enc_flags, 2) && (bit_is_set(enc_flags, 0) || bit_is_set(enc_flags, 4))) {
+        enc_action = 1;
+      }
+      else if (bit_is_set(enc_flags, 1) && (bit_is_set(enc_flags, 3) || bit_is_set(enc_flags, 4))) {
+        enc_action = -1;
+      }
+      else if (bit_is_set(enc_flags, 3) && (bit_is_set(enc_flags, 1) || bit_is_set(enc_flags, 4))) {
+        enc_action = -1;
+      }
+ 
+      enc_flags = 0; // reset for next time
+    }
+  }
+ 
+  enc_prev_pos = enc_cur_pos;
+ 
+  return enc_action * ENC_INCR;
 }
 
 
 void draw() {
   phase = (phase +  micros() - lastUpdateTime) % period;
   lastUpdateTime = micros();
-  unsigned int rgbEyes[3][2];
   
-  for (int eye=0; eye<2; eye++) {    
-    for (int c=0; c<3; c++) {
-      if (phase < period / 2) {
-        rgbEyes[c][eye] = rgb[c];
-      } else {
-        rgbEyes[c][eye] = 0;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    if (use_leds[i]) {
+      for (int c=0; c<3; c++) {
+        if (phase < period / 2) {
+          leds[i][c] = rgb[c];
+        } else {
+          leds[i][c] = 0;
+        }
       }
     }
   }
 
-  writeColor(rgbEyes[0][0], rgbEyes[1][0], rgbEyes[2][0], rgbEyes[0][1], rgbEyes[1][1], rgbEyes[2][1]);
-}
-
-void writeColor(int Rl, int Gl, int Bl, int Rr, int Gr, int Br) {
- SB_WriteColor(1, Rl, Gl*4, Bl*4);
- SB_WriteColor(0, Rr, Gr*4, Br*4);
- SB_UpdateLEDs();
+  FastLED.show();
 }
 
 
@@ -200,7 +273,7 @@ boolean wasButtonJustPressed() {
   static int lastReading = LOW;
   static long lastDebounceTime = 0;
 
-  int reading = digitalRead(BUTTON);
+  int reading = digitalRead(ENC_BUTTON);
 
   // If the switch changed, due to noise or pressing:
   if (reading != lastReading) {
